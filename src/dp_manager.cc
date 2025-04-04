@@ -13,7 +13,7 @@ DpManager::DpManager(const vector<Node> &nodes, const int num_var)
       upper_varorder_pq_(),
       lower_varorder_pq_() {
     int previous_var = -1;
-
+    
     for (size_t i = 0; i < nodes.size(); i++) {
         const Node &node = nodes[i];
         if (node.var != previous_var) {

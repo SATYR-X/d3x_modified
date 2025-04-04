@@ -1308,6 +1308,7 @@ void ZddWithLinks::hide_node_cover_down(const int32_t node_id) {
         plink_set_next(hi_prev, hi_next);
     }
 }
+
 void ZddWithLinks::unhide_node_cover_down(const int32_t node_id) {
     Node &node = table_[node_id];
     if (node.hi >= 0) {
