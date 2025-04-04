@@ -15,6 +15,12 @@ uint64_t ZddWithLinks::num_solutions = 0UL;
 uint64_t ZddWithLinks::num_hides = 0UL;
 uint64_t ZddWithLinks::num_failure_backtracks = 0UL;
 
+/**
+ * ZddWithLinks 类的构造函数
+ * @param num_var 变量的数量。
+ * @param sanity_check 是否进行一致性检查。
+ * 初始化 ZDD 结构，设置节点和头部单元，并准备动态规划管理器和隐藏节点栈。
+ */
 ZddWithLinks::ZddWithLinks(int num_var, bool sanity_check)
     : num_var_(num_var),
       table_(),
@@ -37,6 +43,11 @@ ZddWithLinks::ZddWithLinks(int num_var, bool sanity_check)
     header_[num_var].right = 0;
 }
 
+/**
+ * ZddWithLinks 类的拷贝构造函数
+ * @param obj 要复制的 ZddWithLinks 对象。
+ * 复制 ZDD 结构的节点和头部单元，但不复制动态规划管理器和隐藏节点栈。
+ */
 ZddWithLinks::ZddWithLinks(const ZddWithLinks &obj)
     : num_var_(obj.num_var_),
       table_(obj.table_),
@@ -71,78 +82,99 @@ bool ZddWithLinks::operator==(const ZddWithLinks &obj) const {
 }
 
 void ZddWithLinks::search(vector<vector<uint16_t>> &solution, const int depth) {
+    // 增加搜索树节点的计数器
     num_search_tree_nodes++;
-
+    
+    // 如果头部的右链接为0，表示所有列都被覆盖，找到一个解决方案
     if (header_[0].right == 0)  // all columns are covered
     {
+        // 增加解决方案计数器
         num_solutions += 1;
 
         return;
     }
 
     // choose the column with minimum count
+    // 初始化最小选项数为最大值，最小选项列为-1，剩余列计数为0
     count_t min_count = UINT32_MAX;
     int min_count_column = -1;
     int remain_cols = 0;
+
+    // 遍历所有未覆盖的列，寻找具有最小选项数的列
     for (int head_pos = header_[0].right; head_pos != 0;
          head_pos = header_[head_pos].right) {
         const Header &header = header_[head_pos];
         remain_cols++;
-
+        
+        // 如果某列无法覆盖，增加失败回溯计数器并返回
         if (header.count == 0) {
             // cannot cover column, backtrack.
             num_failure_backtracks++;
             return;
         }
 
+        // 更新最小选项数和对应的列
         if (header.count < min_count) {
             min_count_column = head_pos;
             min_count = header.count;
         }
     }
 
+    // 清空当前深度的选择缓冲区，并将最小选项列加入其中
     depth_choice_buf_[depth].clear();
     depth_choice_buf_[depth].push_back((uint16_t)min_count_column);
+    
+    // 批量覆盖选择的列
     batch_cover(std::cbegin(depth_choice_buf_[depth]),
                 std::cend(depth_choice_buf_[depth]));
     int node_id = header_[min_count_column].down;
 
     int lower_change_idx = -1;
-
+    
+    // 遍历选择的列的所有节点
     while (node_id >= 0) {
         // choose an option and cover columns
         const Node &node = table_[node_id];
-
+        
+        // 遍历节点的所有上方向选项
         for (auto up_id = 0; up_id < node.count_upper; ++up_id) {
+            // 计算上方向的选择路径
             compute_upper_choice(node_id, up_id,
                                  depth_upper_choice_buf_[depth]);
+            // 反转选择路径以便于覆盖
             reverse(depth_upper_choice_buf_[depth].begin(),
                     depth_upper_choice_buf_[depth].end());
+            // 批量覆盖上方向的选择路径
             batch_cover(depth_upper_choice_buf_[depth].begin(),
                         depth_upper_choice_buf_[depth].end());
-
+            // 初始化下方向的选择路径
             compute_lower_initial_choice(node.hi, depth_lower_trace_buf_[depth],
                                          depth_lower_change_pts_buf_[depth],
                                          depth_lower_choice_buf_[depth]);
             for (;;) {
+                // 递归搜索下一个深度的解决方案
                 search(solution, depth + 1);
-
+                
+                // 计算下一个下方向的选择路径
                 bool finished = compute_lower_next_choice(
                     depth_lower_trace_buf_[depth],
                     depth_lower_change_pts_buf_[depth],
                     depth_lower_choice_buf_[depth]);
+                // 如果没有更多选择路径，退出循环
                 if (finished) break;
             }
+            // 取消覆盖上方向的选择路径
             batch_uncover(depth_upper_choice_buf_[depth].begin(),
                           depth_upper_choice_buf_[depth].end());
         }
-
+        // 移动到下一个节点
         node_id = node.down;
     }
-
+    // 取消覆盖当前深度的选择列
     batch_uncover(std::cbegin(depth_choice_buf_[depth]),
                   std::cend(depth_choice_buf_[depth]));
 
+    // 如果启用了一致性检查，调用sanity函数检查结构的完整性
     if (sanity_check_ && sanity()) {
         cerr << "inconsistent after uncover" << endl;
     }
@@ -198,62 +230,82 @@ void ZddWithLinks::load_zdd_from_file(const string &file_name) {
     setup_dancing_links();
 }
 
+/**
+ * 批量覆盖给定的列。
+ * @param col_begin 列开始的迭代器。
+ * @param col_end 列结束的迭代器。
+ * 通过覆盖列来更新数据结构，隐藏相关节点。
+ */
 void ZddWithLinks::batch_cover(
     const std::vector<uint16_t>::const_iterator col_begin,
     const std::vector<uint16_t>::const_iterator col_end) {
+    // 确保列是按顺序排列的
     assert(is_sorted(col_begin, col_end));
+    // 如果没有列需要覆盖，直接返回
     if (col_begin == col_end) {
         return;
     }
     // cover headers
+    // 遍历每个列，覆盖头部
     for (auto it = col_begin; it != col_end; ++it) {
         const auto col = *it;
+        // 增加头部更新计数器
         num_head_updates++;
+        // 获取当前列的左链接和右链接
         auto cleft = header_[col].left, cright = header_[col].right;
+        // 更新左链接的右指针和右链接的左指针，移除当前列
         header_[cleft].right = cright;
         header_[cright].left = cleft;
     }
-
+    
+    // 在隐藏节点栈中推入检查点
     hidden_node_stack_->push_checkpoint();
     {
         auto next_cover_column = col_begin;
         auto var = *next_cover_column;
+        // 遍历每个列，添加到动态规划管理器中
         for (auto it = col_begin; it != col_end; ++it) {
             const auto col = *it;
             dp_mgr_->add_lower_var(col);
         }
+        // 遍历所有非零变量
         for (auto var = dp_mgr_->lower_nonzero_var(); var != 0;
              var = dp_mgr_->lower_nonzero_var()) {
             auto &var_head = header_[var];
+            // 如果当前变量是下一个需要覆盖的列，更新下一个列
             if (next_cover_column != col_end && var == *next_cover_column) {
                 next_cover_column++;
-
+                // 遍历当前变量的所有节点
                 for (auto node_id = header_[var].down; node_id >= 0;
                      node_id = table_[node_id].down) {
                     num_updates++;
                     Node &node = table_[node_id];
-
+                    // 确保节点的上方向和高方向计数大于0
                     assert(node.count_upper > 0);
                     assert(node.count_hi > 0);
                     auto nhi = node.hi, nlo = node.lo;
+                    // 如果高方向节点存在，更新动态规划管理器
                     if (nhi >= 0 && node.count_hi > 0 && node.count_upper > 0) {
                         //                    if (nhi >= 0) {
                         dp_mgr_->add_node_diff_count(table_[nhi].var, nhi,
                                                      node.count_upper);
                     }
-
+                    // 获取并清除节点的上方向计数差异
                     const auto count_diff_upper =
                         dp_mgr_->get_count_and_clear(node_id);
+                    // 如果上方向计数差异大于0且低方向节点存在，更新动态规划管理器
                     if (count_diff_upper > 0 && nlo >= 0) {
                         dp_mgr_->add_node_diff_count(table_[nlo].var, nlo,
                                                      count_diff_upper);
                     }
+                    // 更新节点的上方向计数和变量头部的计数
                     node.count_upper -= count_diff_upper;
                     var_head.count -= count_diff_upper * node.count_hi;
-
+                    // 如果节点的上方向计数为0，隐藏节点
                     if (node.count_upper == 0) {
                         num_hides++;
                         auto nup = node.up, ndown = node.down;
+                        // 更新上方向和下方向的链接
                         if (nup >= 0) {
                             table_[nup].down = ndown;
                         } else {
@@ -270,38 +322,43 @@ void ZddWithLinks::batch_cover(
                             plink_set_next(lo_prev, lo_next);
                         }
                     }
-
+                    // 隐藏上方向为零的节点并推入隐藏节点栈
                     hide_node_cover_down(node_id);
                     hidden_node_stack_->push_cover_down(node_id);
                 }
             } else {  // var が cover_columnsではなかった場合
-
+                      // 如果变量不是需要覆盖的列
+                // 遍历动态规划管理器中的所有元素
                 for (size_t i = 0; i < dp_mgr_->num_elems(var); i++) {
                     num_updates++;
 
                     const auto node_id = dp_mgr_->at(var, i);
                     Node &node = table_[node_id];
-
+                    // 确保节点的上方向计数大于0
                     assert(node.count_upper > 0);
-
+                    // 获取并清除节点的上方向计数差异
                     const auto upper_count =
                         dp_mgr_->get_count_and_clear(node_id);
+                    // 更新节点的上方向计数和变量头部的计数
                     node.count_upper -= upper_count;
                     var_head.count -= upper_count * node.count_hi;
-
+                    // 确保上方向计数和高方向计数大于0
                     assert(upper_count > 0);
                     assert(node.count_hi > 0);
                     auto nhi = node.hi, nlo = node.lo;
+                    // 如果高方向节点存在，更新动态规划管理器
                     if (nhi >= 0 && node.count_hi > 0 && upper_count > 0) {
                         dp_mgr_->add_node_diff_count(table_[nhi].var, nhi,
                                                      upper_count);
                     }
+                    // 如果低方向节点存在，更新动态规划管理器
                     if (nlo >= 0 && upper_count > 0 && node.count_lo > 0) {
                         dp_mgr_->add_node_diff_count(table_[nlo].var, nlo,
                                                      upper_count);
                     }
 
                     // hide nodes
+                    // 如果节点的上方向计数为0，隐藏节点
                     if (node.count_upper == 0) {
                         num_hides++;
                         auto nup = node.up, ndown = node.down;
@@ -315,17 +372,17 @@ void ZddWithLinks::batch_cover(
                         } else {
                             var_head.up = nup;
                         }
-
+                        // 隐藏上方向为零的节点并推入隐藏节点栈
                         hide_node_upperzero(node_id);
                         hidden_node_stack_->push_upperzero(node_id);
                     }
                 }
             }
             // clear dp counter
+            // 清除动态规划计数器
             dp_mgr_->clear_var_counter(var);
         }
     }
-
     hidden_node_stack_->push_checkpoint();
     // processing upper nodes
     for (auto it = col_begin; it != col_end; ++it) {
@@ -764,7 +821,10 @@ void ZddWithLinks::batch_uncover(
         }
     }
 }
-
+/**
+ * 设置舞动链接结构，初始化节点计数和链接关系。
+ * 初始化节点的计数和链接关系，准备动态规划管理器。
+ */
 void ZddWithLinks::setup_dancing_links() {
     // initialize counts
     for (Node &node : table_) {
@@ -860,7 +920,13 @@ void ZddWithLinks::setup_dancing_links() {
     }
     dp_mgr_ = make_unique<DpManager>(table_, num_var_);
 }
-
+/**
+ * 计算上方向的选择路径
+ * @param node_id 节点 ID。
+ * @param up_id 上方向的 ID。
+ * @param choice 存储选择路径的向量。
+ * 计算从根节点到指定节点的选择路径。
+ */
 void ZddWithLinks::compute_upper_choice(int32_t node_id, count_t up_id,
                                         vector<uint16_t> &choice) noexcept {
     choice.clear();
@@ -894,7 +960,15 @@ void ZddWithLinks::compute_upper_choice(int32_t node_id, count_t up_id,
         }
     }
 }
-
+/**
+ * 初始化上方向的选择路径
+ * @param start_id 起始节点 ID。
+ * @param visited 记录访问过的节点。
+ * @param diff_choices 记录不同选择的索引。
+ * @param diff_choice_ids 记录不同选择的节点 ID。
+ * @param choices_buf 存储选择路径的缓冲区。
+ * 初始化从根节点到指定节点的选择路径。
+ */
 void ZddWithLinks::compute_upper_initial_choice(
     const int32_t start_id, vector<uint32_t> &visited,
     vector<size_t> &diff_choices, vector<int32_t> &diff_choice_ids,
@@ -950,7 +1024,15 @@ void ZddWithLinks::compute_upper_initial_choice(
         exit(1);
     }
 }
-
+/**
+ * 计算上方向的下一个选择路径
+ * @param visited 记录访问过的节点。
+ * @param diff_choices 记录不同选择的索引。
+ * @param diff_choice_ids 记录不同选择的节点 ID。
+ * @param choice_buf 存储选择路径的缓冲区。
+ * @return 如果没有更多选择路径则返回 true，否则返回 false。
+ * 计算从当前节点到下一个节点的选择路径。
+ */
 bool ZddWithLinks::compute_upper_next_choice(vector<uint32_t> &visited,
                                              vector<size_t> &diff_choices,
                                              vector<int32_t> &diff_choice_ids,
@@ -1073,7 +1155,13 @@ bool ZddWithLinks::compute_upper_next_choice(vector<uint32_t> &visited,
     }
     return false;
 }
-
+/**
+ * 计算下方向的选择路径
+ * @param node_id 节点 ID。
+ * @param down_id 下方向的 ID。
+ * @param choice 存储选择路径的向量。
+ * 计算从根节点到指定节点的选择路径。
+ */
 void ZddWithLinks::compute_lower_choice(int32_t node_id, count_t down_id,
                                         vector<uint16_t> &choice) noexcept {
     choice.clear();
@@ -1092,7 +1180,14 @@ void ZddWithLinks::compute_lower_choice(int32_t node_id, count_t down_id,
         }
     }
 }
-
+/**
+ * 初始化下方向的选择路径
+ * @param start_id 起始节点 ID。
+ * @param visited 记录访问过的节点。
+ * @param diff_choices 记录不同选择的索引。
+ * @param choices_buf 存储选择路径的缓冲区。
+ * 初始化从根节点到指定节点的选择路径。
+ */
 void ZddWithLinks::compute_lower_initial_choice(const int32_t start_id,
                                                 vector<uint32_t> &visited,
                                                 vector<size_t> &diff_choices,
@@ -1135,7 +1230,14 @@ void ZddWithLinks::compute_lower_initial_choice(const int32_t start_id,
         exit(1);
     }
 }
-
+/**
+ * 计算下方向的下一个选择路径
+ * @param visited 记录访问过的节点。
+ * @param diff_choices 记录不同选择的索引。
+ * @param choice_buf 存储选择路径的缓冲区。
+ * @return 如果没有更多选择路径则返回 true，否则返回 false
+ * 计算从当前节点到下一个节点的选择路径。
+ */
 bool ZddWithLinks::compute_lower_next_choice(vector<uint32_t> &visited,
                                              vector<size_t> &diff_choices,
                                              vector<uint16_t> &choice_buf) {
@@ -1208,7 +1310,11 @@ bool ZddWithLinks::compute_lower_next_choice(vector<uint32_t> &visited,
     }
     return false;
 }
-
+/**
+ * 隐藏指定的节点
+ * @param node_id 要隐藏的节点 ID。
+ * 隐藏指定的节点，更新父子链接。
+ */
 void ZddWithLinks::hide_node(const int32_t node_id) {
     Node &node = table_[node_id];
     //    cerr << "hide " << node_id << endl;
@@ -1251,7 +1357,11 @@ void ZddWithLinks::hide_node(const int32_t node_id) {
         lo_child.parents_tail = np_tail;
     }
 }
-
+/**
+ * 取消隐藏指定的节点
+ * @param node_id 要取消隐藏的节点 ID。
+ * 恢复指定节点的可见性，更新父子链接。
+ */
 void ZddWithLinks::unhide_node(const int32_t node_id) {
     Node &node = table_[node_id];
 
@@ -1298,7 +1408,10 @@ void ZddWithLinks::unhide_node(const int32_t node_id) {
         }
     }
 }
-
+/**
+ * 隐藏cover_down类型的节点
+ * @param node_id 要隐藏的节点 ID。
+ */
 void ZddWithLinks::hide_node_cover_down(const int32_t node_id) {
     Node &node = table_[node_id];
 
@@ -1317,7 +1430,11 @@ void ZddWithLinks::unhide_node_cover_down(const int32_t node_id) {
         plink_set_next(hi_prev, node_id << 2UL | 1UL);
     }
 }
-
+/**
+ * 隐藏cover_up类型的节点
+ * @param node_id 要隐藏的节点 ID。
+ * 隐藏cover_up类型的节点，更新父子链接。
+ */
 void ZddWithLinks::hide_node_cover_up(const int32_t node_id) {
 
     Node &node = table_[node_id];
@@ -1351,7 +1468,11 @@ void ZddWithLinks::hide_node_cover_up(const int32_t node_id) {
         lo_child.parents_tail = np_tail;
     }
 }
-
+/**
+ * 取消隐藏cover_up类型的节点
+ * @param node_id 要取消隐藏的节点 ID。
+ * 恢复cover_up类型节点的可见性，更新父子链接。
+ */
 void ZddWithLinks::unhide_node_cover_up(const int32_t node_id) {
     Node &node = table_[node_id];
 
@@ -1389,7 +1510,11 @@ void ZddWithLinks::unhide_node_cover_up(const int32_t node_id) {
         }
     }
 }
-
+/**
+ * 隐藏upperzero类型的节点
+ * @param node_id 要隐藏的节点 ID。
+ * 隐藏upperzero类型的节点，更新父子链接。
+ */
 void ZddWithLinks::hide_node_upperzero(const int32_t node_id) {
     Node &node = table_[node_id];
     assert(node.count_hi > 0);
@@ -1406,7 +1531,11 @@ void ZddWithLinks::hide_node_upperzero(const int32_t node_id) {
         plink_set_next(lo_prev, lo_next);
     }
 }
-
+/**
+ * 取消隐藏upperzero类型的节点
+ * @param node_id 要取消隐藏的节点 ID。
+ * 恢复upperzero类型节点的可见性，更新父子链接。
+ */
 void ZddWithLinks::unhide_node_upperzero(const int32_t node_id) {
     Node &node = table_[node_id];
     if (node.lo >= 0) {
@@ -1423,7 +1552,11 @@ void ZddWithLinks::unhide_node_upperzero(const int32_t node_id) {
         plink_set_next(hi_prev, node_id << 2UL | 1UL);
     }
 }
-
+/**
+ * 隐藏lowerzero类型的节点
+ * @param node_id 要隐藏的节点 ID。
+ * 隐藏lowerzero类型的节点，更新父子链接。
+ */
 void ZddWithLinks::hide_node_lowerzero(const int32_t node_id) {
     Node &node = table_[node_id];
     if (!plink_is_term(node.parents_head)) {
@@ -1458,7 +1591,11 @@ void ZddWithLinks::hide_node_lowerzero(const int32_t node_id) {
         lo_child.parents_tail = np_tail;
     }
 }
-
+/**
+ * 取消隐藏lowerzero类型的节点
+ * @param node_id 要取消隐藏的节点 ID。
+ * 恢复lowerzero类型节点的可见性，更新父子链接。
+ */
 void ZddWithLinks::unhide_node_lowerzero(const int32_t node_id) {
     Node &node = table_[node_id];
 
@@ -1495,7 +1632,11 @@ void ZddWithLinks::unhide_node_lowerzero(const int32_t node_id) {
         }
     }
 }
-
+/**
+ * 检查DanceDD结构的有效性
+ * @return 如果结构有效则返回 false，否则返回 true。
+ * 检查DanceDD结构的完整性和一致性。
+ */
 bool ZddWithLinks::sanity() const {
     int pos, prev;
 
